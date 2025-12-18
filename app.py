@@ -19,10 +19,6 @@ from urllib.parse import urlparse
 
 # tqdm, chardet는 실제 사용이 거의 없고, openai와 OpenAI가 동시에 있어서 향후 확인 필요
 
-import os
-print(os.getcwd())
-os.chdir("/home/yrjo/ref_online")
-print(os.getcwd())
 
 load_dotenv("/home/yrjo/.env")  #.env 파일 로드
 if not os.environ.get("OPENAI_API_KEY"):
