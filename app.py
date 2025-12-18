@@ -20,12 +20,25 @@ from urllib.parse import urlparse
 # tqdm, chardet는 실제 사용이 거의 없고, openai와 OpenAI가 동시에 있어서 향후 확인 필요
 
 
-load_dotenv("/home/yrjo/.env")  #.env 파일 로드
-if not os.environ.get("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"]=getpass.getpass("Enter your OpenAI API Key: ")
-api_key = os.environ.get("OPENAI_API_KEY")
-client = OpenAI(api_key = api_key)
-#st.set_page_config(layout="wide")
+import os
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()  # 로컬에서만 .env 읽힘(Cloud에선 없어도 됨)
+
+api_key = None
+# 1) Streamlit Cloud Secrets 우선
+if hasattr(st, "secrets"):
+    api_key = st.secrets.get("OPENAI_API_KEY", None)
+
+# 2) 없으면 환경변수에서
+if not api_key:
+    api_key = os.environ.get("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("OPENAI_API_KEY가 설정되지 않았습니다. Streamlit Cloud의 Secrets에 추가해주세요.")
+    st.stop()
+
 
 st.set_page_config(layout="wide",page_title="KEI 참고문헌 온라인자료 검증도구")
 
