@@ -26,18 +26,13 @@ from dotenv import load_dotenv
 
 load_dotenv()  # 로컬에서만 .env 읽힘(Cloud에선 없어도 됨)
 
-api_key = None
-# 1) Streamlit Cloud Secrets 우선
-if hasattr(st, "secrets"):
-    api_key = st.secrets.get("OPENAI_API_KEY", None)
-
-# 2) 없으면 환경변수에서
+api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 if not api_key:
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-if not api_key:
-    st.error("OPENAI_API_KEY가 설정되지 않았습니다. Streamlit Cloud의 Secrets에 추가해주세요.")
+    st.error("OPENAI_API_KEY가 설정되지 않았습니다. Streamlit Cloud > Secrets에 추가해주세요.")
     st.stop()
+
+client = OpenAI(api_key=api_key)
+openai.api_key = api_key
 
 
 st.set_page_config(layout="wide",page_title="KEI 참고문헌 온라인자료 검증도구")
@@ -263,6 +258,7 @@ def GPTcheck(doc):
 
     retries = 0
     max_retries = 5
+    
     while retries < max_retries:
         try:
             response = client.chat.completions.create(
@@ -273,18 +269,23 @@ def GPTcheck(doc):
                     {"role": "user", "content": f"문서:{doc}"}
                 ]
             )
-            result = response.choices[0].message.content
-            result_dict = json.loads(result)
-            result_dict["원문"] = doc  # 문서 이름 추가
-            return result_dict
+            raw = response.choices[0].message.content
+            result_dict = json.loads(raw)
+
+            # ✅ 핵심: 오류여부가 없거나 비어도 강제로 채움
+            err = result_dict.get("오류여부")
+            if not err:
+                err = "O(오류여부 누락)"
+
+            return {"오류여부": err, "원문": doc}
+
         except openai.RateLimitError as e:
-            # Rate limit 오류가 발생했을 때
-            print(f"Rate limit error: {e}. Retrying in {e.retry_after} seconds...")
-            time.sleep(e.retry_after+2)
+            time.sleep(getattr(e, "retry_after", 2) + 2)
             retries += 1
+
         except Exception as e:
-            st.error(f"Error processing document: {str(e)}")
-            return None
+            # ✅ 핵심: None이 아니라 기본 dict 반환
+            return {"오류여부": f"O(GPTcheck 실패:{type(e).__name__})", "원문": doc}
 
 
 import re
@@ -436,8 +437,23 @@ def main():
                 progress = 15 + int(30 * (idx + 1) / n3)
                 progress_bar.progress(progress)
                 status_text.text(f"3단계: GPT 형식검증 수행 중... ({idx + 1}/{n3})")
-            GPT_check_df = pd.DataFrame(GPT_check_list)
-            result_df['GPT_형식체크_오류여부'] = GPT_check_df['오류여부']
+            # GPT_check_df = pd.DataFrame(GPT_check_list)
+            # result_df['GPT_형식체크_오류여부'] = GPT_check_df['오류여부']
+
+            gpt_errors = []
+            gpt_originals = []
+            for r, doc in zip(GPT_check_list, entries):
+                if isinstance(r, dict):
+                    gpt_errors.append(r.get("오류여부", "O(오류여부 없음)"))
+                    gpt_originals.append(r.get("원문", doc))
+                else:
+                    gpt_errors.append("O(GPTcheck None)")
+                    gpt_originals.append(doc)
+
+            result_df["GPT_형식체크_오류여부"] = gpt_errors
+            # 나중에 result_df['원문']을 GPT_check_df에서 가져오고 있었으니, 여기서 같이 세팅
+            result_df["원문"] = gpt_originals
+
     
 
             # 4단계: 45% → 95% 점진적으로 증가
@@ -450,7 +466,7 @@ def main():
                 progress_bar.progress(progress)
                 status_text.text(f"4단계: URL 확인 중... ({i + 1}/{n4})")
             result_df['GPT_URL_유효정보_오류여부'] = URL_check_results
-            result_df['원문'] = GPT_check_df['원문']
+            #result_df['원문'] = GPT_check_df['원문']
             
             # 5단계: 95% → 100%
             progress_bar.progress(95)
