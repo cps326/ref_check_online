@@ -538,6 +538,25 @@ def main():
     if st.session_state["result_df"] is not None:
         result_df = st.session_state["result_df"]
 
+        st.markdown("""
+<style>
+/* expander 헤더(수동확인) 강조: 배경/테두리/글자 */
+div[data-testid="stExpander"] details summary {
+    background: #e8f0fe;       /* 연한 파랑 */
+    border: 1px solid #8ab4f8; /* 파란 테두리 */
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-weight: 700;
+}
+
+/* 화살표 아이콘 여백/정렬 보정(선택) */
+div[data-testid="stExpander"] details summary svg {
+    margin-right: 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
         # ===== 수동 확인 UI (오류/확인불가만) =====
         with st.expander("🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다. 여기를 눌러주세요! 아래 표가 활성화되면, URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗", expanded=False):
             issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
