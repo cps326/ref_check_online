@@ -8,7 +8,6 @@ from collections import OrderedDict
 import json
 import streamlit as st
 import io
-import xlsxwriter
 import openai
 import time
 from urllib.parse import urljoin, urlparse
@@ -44,7 +43,7 @@ def truncate_string(text, max_length=10000):
 
 
 # =========================
-# URL 상태 체크
+# URL 상태 체크 (정상/오류/확인불가/정상(보안주의))
 # =========================
 def check_url_status(url: str, timeout: int = 15) -> dict:
     if not isinstance(url, str) or not url.strip():
@@ -57,16 +56,17 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
+        # 기본: SSL 검증 ON
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status_code = r.status_code
         final_url = r.url
 
         if 200 <= status_code < 300:
             return {"URL_상태": "정상", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": ""}
-        else:
-            return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": f"HTTP {status_code}"}
+        return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": f"HTTP {status_code}"}
 
     except requests.exceptions.SSLError:
+        # SSL 검증 실패 -> verify=False로 재시도
         try:
             r2 = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
             status_code = r2.status_code
@@ -75,9 +75,9 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
             if 200 <= status_code < 300:
                 memo = "SSL 검증 실패(보안주의): verify=False로는 접속됨"
                 return {"URL_상태": "정상(보안주의)", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
-            else:
-                memo = f"SSL 검증 실패 + HTTP {status_code}(verify=False)"
-                return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
+
+            memo = f"SSL 검증 실패 + HTTP {status_code}(verify=False)"
+            return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
 
         except Exception as e2:
             msg = f"{type(e2).__name__}: {str(e2)[:120]}"
@@ -96,7 +96,7 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
 
 
 # =========================
-# crawling: URL에서 페이지 텍스트
+# crawling: URL에서 페이지 텍스트 가져오기
 # =========================
 def crawling(url):
     headers = {
@@ -145,6 +145,7 @@ def crawling(url):
 
         content = soup.get_text(strip=True)
 
+        # iframe 처리
         iframes = soup.find_all("iframe")
         iframe_contents = []
         for iframe in iframes:
@@ -173,7 +174,7 @@ def crawling(url):
 
 
 # =========================
-# GPT URL 판별 + 매핑
+# GPT 기반 URL 내용 판별
 # =========================
 max_len = 50000
 
@@ -210,6 +211,7 @@ def GPTclass(x, y):
 
 
 def map_gpt_url_result(v):
+    """X/O/특수문구 -> 사용자 표기(일치/불일치/확인불가/파일...)"""
     if v is None or not isinstance(v, str):
         return "확인불가"
     s = v.strip()
@@ -225,14 +227,16 @@ def map_gpt_url_result(v):
         return "일치(유효)"
     if s == "O" or s.startswith("O"):
         return "불일치(오류)"
+
     return s
 
 
 # =========================
-# 참고문헌 분리 + 규칙 체크
+# 참고문헌 분리
 # =========================
 def separator(entry):
     parts = [""] * 4
+
     if "http" in entry:
         pattern_http = r",\s+(?=http)"
     else:
@@ -242,6 +246,7 @@ def separator(entry):
     doc_info = parts_http[0]
     ref_info = parts_http[1] if len(parts_http) > 1 else ""
 
+    # “ ”(스마트 따옴표) 기준
     if "“" in doc_info and "”" in doc_info:
         match = re.match(r"(.+?),\s*?“(.*)”", doc_info)
         if match:
@@ -265,38 +270,8 @@ def separator(entry):
     return parts
 
 
-def check_format(text):
-    title_match = re.search(r'"[^"]*"', text)
-    if not title_match:
-        return False
-
-    title_start = title_match.start()
-    author = text[:title_start].strip().rstrip(",")
-    if not author:
-        return False
-
-    rest = text[title_match.end():].strip()
-    temp_parts = [p.strip() for p in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", rest)]
-
-    parts = []
-    i = 0
-    while i < len(temp_parts):
-        part = temp_parts[i]
-        if part.startswith("http"):
-            while i + 1 < len(temp_parts) and not temp_parts[i + 1].startswith("검색일") and not re.search(r"\d{4}", temp_parts[i + 1]):
-                part += "," + temp_parts[i + 1]
-                i += 1
-        parts.append(part)
-        i += 1
-
-    if len(parts) < 2:
-        return False
-
-    return True
-
-
 # =========================
-# GPT 형식 검증
+# GPT 형식 검증 (항상 dict 반환)
 # =========================
 def GPTcheck(doc):
     query = """
@@ -331,7 +306,28 @@ def GPTcheck(doc):
 
 
 # =========================
-# entries -> DataFrame (✅ 컬럼명 확정 생성)
+# 규칙 기반 형식 체크
+# =========================
+def check_format(text):
+    title_match = re.search(r'"[^"]*"', text)  # 큰따옴표 기준
+    if not title_match:
+        return False
+
+    title_start = title_match.start()
+    author = text[:title_start].strip().rstrip(",")
+    if not author:
+        return False
+
+    # 최소한 URL/검색일 같은 구조가 있는지 대략 체크
+    rest = text[title_match.end():].strip()
+    temp_parts = [p.strip() for p in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", rest)]
+    if len(temp_parts) < 2:
+        return False
+    return True
+
+
+# =========================
+# entries -> DataFrame (✅ 요청한 컬럼명으로 확정 생성)
 # =========================
 def process_entries(entries):
     articles = []
@@ -367,32 +363,26 @@ def process_entries(entries):
 
     df = pd.DataFrame(articles)
 
-    # ✅ 혹시라도 누락되면 강제로 생성(방어)
     must_cols = [
         "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
         "작성기관_작성자", "제목", "URL_보고서기준",
-        "search_date", "참고문헌_작성양식_체크(규칙기반)"
+        "search_date", "참고문헌_작성양식_체크(규칙기반)",
     ]
     for c in must_cols:
         if c not in df.columns:
             df[c] = ""
 
-    preferred_order = [
-        "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
-        "작성기관_작성자", "제목", "URL_보고서기준",
-        "search_date", "참고문헌_작성양식_체크(규칙기반)"
-    ]
+    preferred_order = must_cols
     return df[preferred_order]
 
 
 # =========================
-# (핵심) 컬럼명/필수컬럼 정리 함수: run 이후/세션 복원시에도 보정
+# 컬럼 보정(세션 복원/구버전 섞임 대비)
 # =========================
 def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or len(df) == 0:
         return df
 
-    # 혹시 과거 컬럼명이 섞여있을 때 대비(리네임)
     rename_map = {
         "source": "작성기관_작성자",
         "title": "제목",
@@ -413,18 +403,75 @@ def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
         "작성기관_작성자", "제목", "URL_보고서기준",
         "URL_수동검증_결과", "수동검증_메모",
         "최종_URL_상태", "최종_URL_메모",
+        "참고문헌_작성양식_체크(규칙기반)",
+        "참고문헌_작성양식_체크(GPT기반)",
+        "URL_내용일치여부(GPT)",
     ]
     for c in must_cols:
         if c not in df.columns:
             df[c] = ""
 
-    # 최종컬럼 기본값
-    if "최종_URL_상태" in df.columns and df["최종_URL_상태"].astype(str).str.strip().eq("").all():
+    # 최종 기본값 세팅
+    if df["최종_URL_상태"].astype(str).str.strip().eq("").all():
         df["최종_URL_상태"] = df.get("URL_상태", "")
-    if "최종_URL_메모" in df.columns and df["최종_URL_메모"].astype(str).str.strip().eq("").all():
+    if df["최종_URL_메모"].astype(str).str.strip().eq("").all():
         df["최종_URL_메모"] = df.get("URL_메모", "")
 
     return df
+
+
+# =========================
+# 화면/엑셀 색칠 기준(최종_URL_상태)
+# =========================
+def highlight_url_status(val):
+    if val == "오류":
+        return "background-color: #f8d7da"  # 연한 빨강
+    if val == "확인불가":
+        return "background-color: #fff3cd"  # 연한 노랑
+    if val == "정상(보안주의)":
+        return "background-color: #ffe5b4"  # 연한 주황
+    return ""
+
+
+def write_excel_with_conditional_format(df: pd.DataFrame) -> bytes:
+    """다운로드 엑셀에 색상 유지: xlsxwriter 조건부서식"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Sheet1")
+        workbook = writer.book
+        worksheet = writer.sheets["Sheet1"]
+
+        if "최종_URL_상태" in df.columns:
+            status_col = df.columns.get_loc("최종_URL_상태")
+
+            fmt_red = workbook.add_format({"bg_color": "#F8D7DA"})
+            fmt_yel = workbook.add_format({"bg_color": "#FFF3CD"})
+            fmt_org = workbook.add_format({"bg_color": "#FFE5B4"})
+
+            start_row = 1
+            end_row = len(df)
+
+            worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+                "type": "text",
+                "criteria": "containing",
+                "value": "오류",
+                "format": fmt_red,
+            })
+            worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+                "type": "text",
+                "criteria": "containing",
+                "value": "확인불가",
+                "format": fmt_yel,
+            })
+            worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+                "type": "text",
+                "criteria": "containing",
+                "value": "정상(보안주의)",
+                "format": fmt_org,
+            })
+
+    output.seek(0)
+    return output.read()
 
 
 # =========================
@@ -460,6 +507,22 @@ def main():
         st.success("초기화 완료! 다시 실행하세요.")
         st.stop()
 
+    # expander 헤더 스타일(배경)
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stExpander"] details summary {
+            background: #e8f0fe;
+            border: 1px solid #8ab4f8;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-weight: 700;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if run_clicked:
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -471,11 +534,7 @@ def main():
         progress_bar.progress(5)
         status_text.text("1단계: 입력 데이터 로딩 중...")
 
-        if uploaded_file:
-            data = uploaded_file.read().decode("utf-8")
-        else:
-            data = text_data
-
+        data = uploaded_file.read().decode("utf-8") if uploaded_file else text_data
         entries = data.strip().splitlines()
 
         progress_bar.progress(10)
@@ -521,17 +580,20 @@ def main():
 
         result_df["URL_내용일치여부(GPT)"] = [map_gpt_url_result(x) for x in URL_check_results]
 
-        # 수동/최종 컬럼 생성
+        # 수동/최종 컬럼
         result_df["URL_수동검증_결과"] = ""
         result_df["수동검증_메모"] = ""
         result_df["최종_URL_상태"] = result_df["URL_상태"]
         result_df["최종_URL_메모"] = result_df["URL_메모"]
 
-        # 컬럼 보정(혹시라도 꼬임 방지)
         result_df = ensure_required_columns(result_df)
 
-        # 보기 좋게 앞열 배치
-        front_cols = ["최종_URL_상태", "최종_URL_메모", "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안"]
+        # 앞열 배치
+        front_cols = [
+            "최종_URL_상태", "최종_URL_메모",
+            "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
+            "URL_내용일치여부(GPT)",
+        ]
         front_cols = [c for c in front_cols if c in result_df.columns]
         result_df = result_df[front_cols + [c for c in result_df.columns if c not in front_cols]]
 
@@ -541,35 +603,23 @@ def main():
         status_text.text("✅ 완료되었습니다! 아래에서 수동 확인 후 다운로드하세요.")
 
     # =========================
-    # 결과 표시(세션 기반)
+    # 결과 표시
     # =========================
     if st.session_state["result_df"] is not None:
         result_df = ensure_required_columns(st.session_state["result_df"])
 
-        st.markdown(
-            """
-            <style>
-            div[data-testid="stExpander"] details summary {
-                background: #e8f0fe;
-                border: 1px solid #8ab4f8;
-                border-radius: 10px;
-                padding: 10px 12px;
-                font-weight: 700;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
+        # ===== 수동 확인(오류/확인불가만) =====
         with st.expander(
             "🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다. 여기를 눌러주세요! 아래 표가 활성화되면, URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗",
             expanded=False,
         ):
             issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
 
-            want_cols = ["URL_상태", "URL_메모", "URL_보고서기준", "작성기관_작성자", "제목", "URL_수동검증_결과", "수동검증_메모"]
-            exist_cols = [c for c in want_cols if c in result_df.columns]  # ✅ 있는 컬럼만 선택(KeyError 방지)
-
+            want_cols = [
+                "URL_상태", "URL_메모", "URL_보고서기준", "작성기관_작성자", "제목",
+                "URL_수동검증_결과", "수동검증_메모"
+            ]
+            exist_cols = [c for c in want_cols if c in result_df.columns]
             issues_df = result_df.loc[issue_mask, exist_cols].copy()
 
             if len(issues_df) == 0:
@@ -605,61 +655,20 @@ def main():
                     st.session_state["result_df"] = result_df
                     st.success("수동 판정을 최종 값에 반영했습니다.")
 
-        # 화면 표시
-        def highlight_url_status(val):
-            if val == "오류":
-                return "background-color: #f8d7da"
-            if val == "확인불가":
-                return "background-color: #fff3cd"
-            if val == "정상(보안주의)":
-                return "background-color: #ffe5b4"
-            return ""
-
+        # ===== 화면 표(색상) =====
         styled = result_df.style.applymap(highlight_url_status, subset=["최종_URL_상태"])
         st.dataframe(styled, use_container_width=True)
 
-        # 엑셀 저장
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-    result_df.to_excel(writer, index=False, sheet_name="Sheet1")
+        # ===== 엑셀 다운로드(색상 유지) =====
+        excel_bytes = write_excel_with_conditional_format(result_df)
+        st.session_state["processed_data"] = excel_bytes
 
-    workbook = writer.book
-    worksheet = writer.sheets["Sheet1"]
-
-    # ✅ 엑셀 색상 포맷
-    fmt_red = workbook.add_format({"bg_color": "#F8D7DA"})   # 오류
-    fmt_yel = workbook.add_format({"bg_color": "#FFF3CD"})   # 확인불가
-    fmt_org = workbook.add_format({"bg_color": "#FFE5B4"})   # 정상(보안주의)
-
-    # ✅ '최종_URL_상태' 열 찾아서 그 열에 조건부서식 적용
-    if "최종_URL_상태" in result_df.columns:
-        status_col = result_df.columns.get_loc("최종_URL_상태")
-
-        start_row = 1                 # 0행은 헤더라서 1부터
-        end_row = len(result_df)      # 마지막 데이터 행
-
-        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
-            "type": "text",
-            "criteria": "containing",
-            "value": "오류",
-            "format": fmt_red
-        })
-        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
-            "type": "text",
-            "criteria": "containing",
-            "value": "확인불가",
-            "format": fmt_yel
-        })
-        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
-            "type": "text",
-            "criteria": "containing",
-            "value": "정상(보안주의)",
-            "format": fmt_org
-        })
-
-output.seek(0)
-st.session_state["processed_data"] = output.read()
-
+        st.download_button(
+            label="엑셀로 다운로드",
+            data=st.session_state["processed_data"],
+            file_name="result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 if __name__ == "__main__":
