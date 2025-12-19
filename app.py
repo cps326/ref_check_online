@@ -14,8 +14,6 @@ import time
 from urllib.parse import urljoin
 from urllib.parse import urlparse
 
-# tqdm, chardet는 현재 코드 흐름에서 사용되지 않아 제거 가능(원하면 추후 정리)
-
 # =========================
 # OpenAI API Key (Cloud 중심)
 # =========================
@@ -47,7 +45,7 @@ def truncate_string(text, max_length=10000):
 
 
 # =========================
-# URL 상태 체크 (정상/오류/확인불가 + 메모)
+# URL 상태 체크 (정상/오류/확인불가/정상(보안주의) + 메모)
 # =========================
 def check_url_status(url: str, timeout: int = 15) -> dict:
     if not isinstance(url, str) or not url.strip():
@@ -60,7 +58,8 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)  # verify=False 제거
+        # 기본: SSL 검증 ON
+        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status_code = r.status_code
         final_url = r.url
 
@@ -69,10 +68,24 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
         else:
             return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": f"HTTP {status_code}"}
 
+    except requests.exceptions.SSLError:
+        # ✅ SSL 검증 실패지만, 실제 접속은 되는지 verify=False로 1회 재시도
+        try:
+            r2 = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
+            status_code = r2.status_code
+            final_url = r2.url
+
+            if 200 <= status_code < 300:
+                memo = "SSL 검증 실패(보안주의): verify=False로는 접속됨"
+                return {"URL_상태": "정상(보안주의)", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
+            else:
+                memo = f"SSL 검증 실패 + HTTP {status_code}(verify=False)"
+                return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
+        except Exception:
+            return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": "SSL 오류(verify=False도 실패)"}
+
     except requests.exceptions.Timeout:
         return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": "Timeout"}
-    except requests.exceptions.SSLError:
-        return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": "SSL 오류"}
     except requests.exceptions.ConnectionError:
         return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": "Connection error"}
     except requests.exceptions.InvalidURL:
@@ -104,7 +117,7 @@ def crawling(url):
             return "파일다운불가"
 
     try:
-        response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)  # verify=False 제거
+        response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
         response_text = response.text
 
         if "You need to enable JavaScript to run this app" in response.text:
@@ -117,7 +130,6 @@ def crawling(url):
         if match:
             redirect_url = match.group(1)
             if "javascript:" not in redirect_url.lower():
-                # redirect_url이 상대경로일 수 있으므로 urljoin 사용
                 redirect_url = urljoin(url, redirect_url)
                 response2 = requests.get(redirect_url, headers=headers, timeout=30, allow_redirects=True)
                 response_text = response_text + response2.text
@@ -134,7 +146,6 @@ def crawling(url):
 
             content = soup.get_text(strip=True)
 
-            # iframe 처리
             iframes = soup.find_all('iframe')
             iframe_contents = []
 
@@ -334,7 +345,6 @@ def process_entries(entries):
         check = ["확인필요" if item == 'NA' or item == '' else item for item in check]
         source = check[0]
 
-        # 출처에 날짜 비슷한 게 있으면 엄격 체크
         if re.search(r"\d{2,4}\.\d+\.\d+", source):
             if not re.search(r"\b\d{4}\.([1-9]|1[0-2])\.([1-9]|[12][0-9]|3[01])\b", source):
                 note = "확인필요"
@@ -347,7 +357,6 @@ def process_entries(entries):
         if not re.search(r"\b\d{4}\.([1-9]|1[0-2])\.([1-9]|[12][0-9]|3[01])\b", search_date):
             search_date = "확인필요"
 
-        # ✅ URL 상태/메모 생성
         url_result = check_url_status(url)
 
         articles.append({
@@ -365,7 +374,6 @@ def process_entries(entries):
 
     df = pd.DataFrame(articles)
 
-    # ✅ 요청: URL 상태/메모를 가장 앞 열로
     preferred_order = [
         "URL_상태", "URL_메모", "URL_상태코드", "URL_최종URL",
         "source", "title", "URL", "search_date", "형식체크_오류여부"
@@ -408,12 +416,6 @@ def main():
 
             result_df = process_entries(entries)
 
-            # ✅ 기존 코드에 있던 “http로 시작하면 X” 덮어쓰기 제거
-            # result_df['URL_오류여부'] = ...
-            # result_df['형식체크_오류여부'] = ...
-
-            # (선택) 형식체크를 좀 더 직관적으로 바꾸고 싶으면 여기서 후처리 가능
-
             status_text.text("3단계: GPT 형식검증 수행 중...")
             GPT_check_list = []
             n3 = len(entries)
@@ -452,18 +454,20 @@ def main():
             progress_bar.progress(95)
             status_text.text("5단계: 결과 정리 및 테이블 구성 중...")
 
-            # ✅ 화면에서 URL_상태 색칠
+            # ✅ 화면에서 URL_상태 색칠 (정상(보안주의) 추가)
             def highlight_url_status(val):
                 if val == "오류":
                     return "background-color: #f8d7da"  # 연한 빨강
                 if val == "확인불가":
                     return "background-color: #fff3cd"  # 연한 노랑
+                if val == "정상(보안주의)":
+                    return "background-color: #ffe5b4"  # 연한 주황
                 return ""
 
             styled = result_df.style.applymap(highlight_url_status, subset=["URL_상태"])
             st.dataframe(styled, use_container_width=True)
 
-            # ✅ 엑셀 저장 + 조건부서식(오류/확인불가)
+            # ✅ 엑셀 저장 + 조건부서식(오류/확인불가/정상(보안주의))
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 result_df.to_excel(writer, index=False, sheet_name='Sheet1')
@@ -475,6 +479,7 @@ def main():
 
                     fmt_red = workbook.add_format({'bg_color': '#F8D7DA'})
                     fmt_yel = workbook.add_format({'bg_color': '#FFF3CD'})
+                    fmt_org = workbook.add_format({'bg_color': '#FFE5B4'})
 
                     start_row = 1
                     end_row = len(result_df)
@@ -490,6 +495,12 @@ def main():
                         'criteria': 'containing',
                         'value': '확인불가',
                         'format': fmt_yel
+                    })
+                    worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+                        'type': 'text',
+                        'criteria': 'containing',
+                        'value': '정상(보안주의)',
+                        'format': fmt_org
                     })
 
             output.seek(0)
