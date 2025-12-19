@@ -451,18 +451,79 @@ def main():
 
             result_df['GPT_URL_유효정보_오류여부'] = URL_check_results
 
+            # ===== 수동 검증 컬럼 준비 =====
+    if "수동_URL_상태" not in result_df.columns:
+        result_df["수동_URL_상태"] = ""   # 사용자가 직접 선택
+    if "수동_메모" not in result_df.columns:
+        result_df["수동_메모"] = ""       # 사용자가 직접 입력
+
+    # 최종 값(기본은 자동판정)
+        result_df["최종_URL_상태"] = result_df["URL_상태"]
+        result_df["최종_URL_메모"] = result_df["URL_메모"]
+
+
             progress_bar.progress(95)
             status_text.text("5단계: 결과 정리 및 테이블 구성 중...")
 
-            # ✅ 화면에서 URL_상태 색칠 (정상(보안주의) 추가)
+            # ✅ 화면에서 최종_URL_상태 색칠
             def highlight_url_status(val):
                 if val == "오류":
-                    return "background-color: #f8d7da"  # 연한 빨강
+                    return "background-color: #f8d7da"
                 if val == "확인불가":
-                    return "background-color: #fff3cd"  # 연한 노랑
+                    return "background-color: #fff3cd"
                 if val == "정상(보안주의)":
-                    return "background-color: #ffe5b4"  # 연한 주황
+                    return "background-color: #ffe5b4"
                 return ""
+
+        styled = result_df.style.applymap(highlight_url_status, subset=["최종_URL_상태"])
+        st.dataframe(styled, use_container_width=True)
+
+
+            # ===== 수동 확인 UI (문제 행만) =====
+with st.expander("🔎 수동 확인(오류/확인불가/보안주의) - 클릭해서 최종 판정 입력", expanded=True):
+    issue_mask = result_df["URL_상태"].isin(["오류", "확인불가", "정상(보안주의)"])
+    issues_df = result_df.loc[issue_mask, [
+        "URL_상태", "URL_메모", "URL", "source", "title", "수동_URL_상태", "수동_메모"
+    ]].copy()
+
+    if len(issues_df) == 0:
+        st.info("수동 확인이 필요한 항목이 없습니다.")
+    else:
+        edited = st.data_editor(
+            issues_df,
+            use_container_width=True,
+            hide_index=False,
+            column_config={
+                "URL": st.column_config.LinkColumn("URL(클릭)", display_text="열기"),
+                "수동_URL_상태": st.column_config.SelectboxColumn(
+                    "수동_URL_상태(선택)",
+                    options=["", "정상", "정상(보안주의)", "오류", "확인불가"],
+                    help="브라우저에서 확인한 결과를 선택하세요."
+                ),
+                "수동_메모": st.column_config.TextColumn(
+                    "수동_메모",
+                    help="수동 확인 근거/사유를 간단히 적어두세요."
+                ),
+            },
+            disabled=["URL_상태", "URL_메모", "source", "title"],  # 자동 결과/원본은 수정 금지
+            key="manual_editor",
+        )
+
+        if st.button("✅ 수동 판정 적용"):
+            # 편집된 내용 원본 result_df에 반영 (index 기준)
+            result_df.loc[edited.index, "수동_URL_상태"] = edited["수동_URL_상태"]
+            result_df.loc[edited.index, "수동_메모"] = edited["수동_메모"]
+
+            # 최종값 업데이트: 수동_URL_상태가 비어있지 않으면 수동을 우선
+            has_manual = result_df["수동_URL_상태"].astype(str).str.strip().ne("")
+            result_df.loc[has_manual, "최종_URL_상태"] = result_df.loc[has_manual, "수동_URL_상태"]
+
+            # 최종 메모: 수동_메모가 있으면 그걸 우선, 없으면 자동 메모 유지
+            has_manual_memo = result_df["수동_메모"].astype(str).str.strip().ne("")
+            result_df.loc[has_manual_memo, "최종_URL_메모"] = result_df.loc[has_manual_memo, "수동_메모"]
+
+            st.success("수동 판정을 최종 값에 반영했습니다. 아래 결과 표/엑셀에 적용됩니다.")
+
 
             styled = result_df.style.applymap(highlight_url_status, subset=["URL_상태"])
             st.dataframe(styled, use_container_width=True)
@@ -474,8 +535,8 @@ def main():
                 workbook = writer.book
                 worksheet = writer.sheets['Sheet1']
 
-                if "URL_상태" in result_df.columns:
-                    status_col = result_df.columns.get_loc("URL_상태")
+                if "최종_URL_상태" in result_df.columns:
+                    status_col = result_df.columns.get_loc("최종_URL_상태")
 
                     fmt_red = workbook.add_format({'bg_color': '#F8D7DA'})
                     fmt_yel = workbook.add_format({'bg_color': '#FFF3CD'})
