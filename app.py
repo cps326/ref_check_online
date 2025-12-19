@@ -509,7 +509,7 @@ def main():
         result_df = st.session_state["result_df"]
 
         # ===== 수동 확인 UI (오류/확인불가만) =====
-        with st.expander("🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다.❗ 아래 표의 URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗", expanded=False):
+        with st.expander("🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다. 여기를 눌러주세요! 아래 표가 활성화되면, URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗", expanded=False):
             issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
             issues_df = result_df.loc[issue_mask, [
                 "URL_상태", "URL_메모", "URL", "source", "title", "수동_URL_상태", "수동_메모"
