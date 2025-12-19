@@ -505,10 +505,10 @@ def main():
     # =========================
     # 결과 표시(세션에 저장된 DF 기반)
     # =========================
-        if st.session_state["result_df"] is not None:
+    if st.session_state["result_df"] is not None:
         result_df = st.session_state["result_df"]
 
- # ===== 수동 확인 UI (오류/확인불가만) =====
+        # ===== 수동 확인 UI (오류/확인불가만) =====
         with st.expander("🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다.❗ 아래 표의 URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗", expanded=False):
             issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
             issues_df = result_df.loc[issue_mask, [
@@ -516,7 +516,7 @@ def main():
             ]].copy()
 
             if len(issues_df) == 0:
-                st.info("수동 확인이 필요한(오류/확인불가) 항목이 없습니다.😍")
+                st.info("수동 확인이 필요한(오류/확인불가) 항목이 없습니다.")
             else:
                 edited = st.data_editor(
                     issues_df,
@@ -551,6 +551,9 @@ def main():
                     has_manual_memo = result_df["수동_메모"].astype(str).str.strip().ne("")
                     result_df.loc[has_manual_memo, "최종_URL_메모"] = result_df.loc[has_manual_memo, "수동_메모"]
 
+                    # ✅ 세션에 다시 저장
+                    st.session_state["result_df"] = result_df
+                    st.success("수동 판정을 최종 값에 반영했습니다. 아래 표/엑셀에 적용됩니다.")
 
         # ✅ 화면에서 최종_URL_상태 색칠
         def highlight_url_status(val):
@@ -606,7 +609,7 @@ def main():
 
         if st.session_state["processed_data"]:
             st.download_button(
-                label="최종결과 엑셀로 다운로드",
+                label="엑셀로 다운로드",
                 data=st.session_state["processed_data"],
                 file_name="result.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
