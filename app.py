@@ -219,6 +219,35 @@ def GPTclass(x, y):
 
 
 # =========================
+# (추가) GPT URL 결과를 사람이 읽기 쉽게 변환 + 컬럼명 변경에 사용
+# =========================
+def map_gpt_url_result(v):
+    if v is None:
+        return "확인불가"
+    if not isinstance(v, str):
+        return "확인불가"
+
+    s = v.strip()
+
+    # crawling에서 넘어오는 특수값들
+    if s == "확인불가":
+        return "확인불가"
+    if "파일다운가능" in s:
+        return "파일(내용확인불가)"
+    if "파일다운불가" in s:
+        return "확인불가"
+
+    # GPT 응답(X/O) 처리: 관련 내용 있으면 X, 아니면 O
+    if s == "X" or s.startswith("X"):
+        return "일치(유효)"
+    if s == "O" or s.startswith("O"):
+        return "불일치(오류)"
+
+    # 그 외 알 수 없는 값은 원문 유지(디버깅 목적)
+    return s
+
+
+# =========================
 # 참고문헌 분리
 # =========================
 def separator(entry):
@@ -480,7 +509,8 @@ def main():
             progress_bar.progress(progress)
             status_text.text(f"4단계: URL 확인 중... ({i + 1}/{n4})")
 
-        result_df["GPT_URL_유효정보_오류여부"] = URL_check_results
+        # ✅ 컬럼명 변경 + X/O -> 한글 라벨 변환
+        result_df["URL_내용일치여부(GPT)"] = [map_gpt_url_result(x) for x in URL_check_results]
 
         # ===== 수동/최종 컬럼 준비 =====
         result_df["수동_URL_상태"] = ""
