@@ -506,39 +506,7 @@ def main():
     # 결과 표시(세션에 저장된 DF 기반)
     # =========================
     if st.session_state["result_df"] is not None:
-        result_df = st.session_state["result_df"]
-
-        # ===== 수동 확인 UI (오류/확인불가만) =====
-        with st.expander("🔎 수동 확인(오류/확인불가) - 클릭해서 최종 판정 입력", expanded=False):
-            issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
-            issues_df = result_df.loc[issue_mask, [
-                "URL_상태", "URL_메모", "URL", "source", "title", "수동_URL_상태", "수동_메모"
-            ]].copy()
-
-            if len(issues_df) == 0:
-                st.info("수동 확인이 필요한(오류/확인불가) 항목이 없습니다.")
-            else:
-                edited = st.data_editor(
-                    issues_df,
-                    use_container_width=True,
-                    hide_index=False,
-                    column_config={
-                        "URL": st.column_config.LinkColumn("URL(클릭)", display_text="열기"),
-                        "수동_URL_상태": st.column_config.SelectboxColumn(
-                            "수동_URL_상태(선택)",
-                            options=["", "정상", "정상(보안주의)", "오류", "확인불가"],
-                            help="브라우저에서 확인한 결과를 선택하세요."
-                        ),
-                        "수동_메모": st.column_config.TextColumn(
-                            "수동_메모",
-                            help="수동 확인 근거/사유를 간단히 적어두세요."
-                        ),
-                    },
-                    disabled=["URL_상태", "URL_메모", "source", "title"],
-                    key="manual_editor",
-                )
-
-                if st.button("✅ 수동 판정 적용"):
+        result_df = st.session_state["기"":
                     # 편집된 내용 원본 result_df에 반영 (index 기준)
                     result_df.loc[edited.index, "수동_URL_상태"] = edited["수동_URL_상태"]
                     result_df.loc[edited.index, "수동_메모"] = edited["수동_메모"]
@@ -553,7 +521,7 @@ def main():
 
                     # ✅ 세션에 다시 저장
                     st.session_state["result_df"] = result_df
-                    st.success("수동 판정을 최종 값에 반영했습니다. 아래 표/엑셀에 적용됩니다.")
+                    st.success("담당자의 수동 판정을 최종 값에 반영했습니다. 아래 표/엑셀에 적용됩니다. 확인해주세요.")
 
         # ✅ 화면에서 최종_URL_상태 색칠
         def highlight_url_status(val):
@@ -609,7 +577,7 @@ def main():
 
         if st.session_state["processed_data"]:
             st.download_button(
-                label="엑셀로 다운로드",
+                label="최종결과 엑셀로 다운로드",
                 data=st.session_state["processed_data"],
                 file_name="result.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
