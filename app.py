@@ -619,18 +619,47 @@ def main():
         st.dataframe(styled, use_container_width=True)
 
         # 엑셀 저장
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            result_df.to_excel(writer, index=False, sheet_name="Sheet1")
-        output.seek(0)
-        st.session_state["processed_data"] = output.read()
+output = io.BytesIO()
+with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    result_df.to_excel(writer, index=False, sheet_name="Sheet1")
 
-        st.download_button(
-            label="엑셀로 다운로드",
-            data=st.session_state["processed_data"],
-            file_name="result.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    workbook = writer.book
+    worksheet = writer.sheets["Sheet1"]
+
+    # ✅ 엑셀 색상 포맷
+    fmt_red = workbook.add_format({"bg_color": "#F8D7DA"})   # 오류
+    fmt_yel = workbook.add_format({"bg_color": "#FFF3CD"})   # 확인불가
+    fmt_org = workbook.add_format({"bg_color": "#FFE5B4"})   # 정상(보안주의)
+
+    # ✅ '최종_URL_상태' 열 찾아서 그 열에 조건부서식 적용
+    if "최종_URL_상태" in result_df.columns:
+        status_col = result_df.columns.get_loc("최종_URL_상태")
+
+        start_row = 1                 # 0행은 헤더라서 1부터
+        end_row = len(result_df)      # 마지막 데이터 행
+
+        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+            "type": "text",
+            "criteria": "containing",
+            "value": "오류",
+            "format": fmt_red
+        })
+        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+            "type": "text",
+            "criteria": "containing",
+            "value": "확인불가",
+            "format": fmt_yel
+        })
+        worksheet.conditional_format(start_row, status_col, end_row, status_col, {
+            "type": "text",
+            "criteria": "containing",
+            "value": "정상(보안주의)",
+            "format": fmt_org
+        })
+
+output.seek(0)
+st.session_state["processed_data"] = output.read()
+
 
 
 if __name__ == "__main__":
