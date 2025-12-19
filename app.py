@@ -411,9 +411,9 @@ def main():
 
     col_run, col_reset = st.columns([1, 1])
     with col_run:
-        run_clicked = st.button("검증실행")
+        run_clicked = st.button("👉여기를 눌러, 검증을 실행해 주세요.")
     with col_reset:
-        reset_clicked = st.button("수동 입력/결과 초기화")
+        reset_clicked = st.button("🔃(검증 후)수동 입력/결과 초기화 버튼")
 
     if reset_clicked:
         st.session_state["processed_data"] = None
