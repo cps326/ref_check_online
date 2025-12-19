@@ -68,7 +68,7 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
         else:
             return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": f"HTTP {status_code}"}
 
-    except requests.exceptions.SSLError as e1:
+    except requests.exceptions.SSLError:
         # SSL 검증 실패지만 실제 접속은 되는지 verify=False로 1회 재시도
         try:
             r2 = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
@@ -83,7 +83,6 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
                 return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": memo}
 
         except Exception as e2:
-            # ✅ 실패 이유를 메모에 남겨서 수동 확인에 도움
             msg = f"{type(e2).__name__}: {str(e2)[:120]}"
             return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": f"SSL 핸드셰이크 실패(verify=False도 실패) - {msg}"}
 
@@ -229,7 +228,6 @@ def map_gpt_url_result(v):
 
     s = v.strip()
 
-    # crawling에서 넘어오는 특수값들
     if s == "확인불가":
         return "확인불가"
     if "파일다운가능" in s:
@@ -237,13 +235,11 @@ def map_gpt_url_result(v):
     if "파일다운불가" in s:
         return "확인불가"
 
-    # GPT 응답(X/O) 처리: 관련 내용 있으면 X, 아니면 O
     if s == "X" or s.startswith("X"):
         return "일치(유효)"
     if s == "O" or s.startswith("O"):
         return "불일치(오류)"
 
-    # 그 외 알 수 없는 값은 원문 유지(디버깅 목적)
     return s
 
 
@@ -538,24 +534,21 @@ def main():
     if st.session_state["result_df"] is not None:
         result_df = st.session_state["result_df"]
 
+        # ✅ (요청) Expander 헤더 배경색 스타일 적용 (버튼처럼 강조)
         st.markdown("""
-<style>
-/* expander 헤더(수동확인) 강조: 배경/테두리/글자 */
-div[data-testid="stExpander"] details summary {
-    background: #e8f0fe;       /* 연한 파랑 */
-    border: 1px solid #8ab4f8; /* 파란 테두리 */
-    border-radius: 10px;
-    padding: 10px 12px;
-    font-weight: 700;
-}
-
-/* 화살표 아이콘 여백/정렬 보정(선택) */
-div[data-testid="stExpander"] details summary svg {
-    margin-right: 8px;
-}
-</style>
-""", unsafe_allow_html=True)
-
+        <style>
+        div[data-testid="stExpander"] details summary {
+            background: #ffb2d9;       /* 연한 핑크 */
+            border: 1px solid #ff997f; /* 진한 테두리 */
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-weight: 700;
+        }
+        div[data-testid="stExpander"] details summary svg {
+            margin-right: 8px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
         # ===== 수동 확인 UI (오류/확인불가만) =====
         with st.expander("🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다. 여기를 눌러주세요! 아래 표가 활성화되면, URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗", expanded=False):
@@ -588,23 +581,19 @@ div[data-testid="stExpander"] details summary svg {
                 )
 
                 if st.button("✅ 수동 판정 적용"):
-                    # 편집된 내용 원본 result_df에 반영 (index 기준)
                     result_df.loc[edited.index, "수동_URL_상태"] = edited["수동_URL_상태"]
                     result_df.loc[edited.index, "수동_메모"] = edited["수동_메모"]
 
-                    # 최종값 업데이트: 수동_URL_상태가 비어있지 않으면 수동을 우선
                     has_manual = result_df["수동_URL_상태"].astype(str).str.strip().ne("")
                     result_df.loc[has_manual, "최종_URL_상태"] = result_df.loc[has_manual, "수동_URL_상태"]
 
-                    # 최종 메모: 수동_메모가 있으면 그걸 우선, 없으면 자동 메모 유지
                     has_manual_memo = result_df["수동_메모"].astype(str).str.strip().ne("")
                     result_df.loc[has_manual_memo, "최종_URL_메모"] = result_df.loc[has_manual_memo, "수동_메모"]
 
-                    # ✅ 세션에 다시 저장
                     st.session_state["result_df"] = result_df
                     st.success("수동 판정을 최종 값에 반영했습니다. 아래 표/엑셀에 적용됩니다.")
 
-        # ✅ 화면에서 최종_URL_상태 색칠
+        # ✅ 화면에서 최종_URL_상태 색칠(기존 유지)
         def highlight_url_status(val):
             if val == "오류":
                 return "background-color: #f8d7da"  # 연한 빨강
