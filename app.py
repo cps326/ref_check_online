@@ -25,6 +25,34 @@ openai.api_key = api_key
 
 st.set_page_config(layout="wide", page_title="KEI 참고문헌 온라인자료 검증도구")
 
+# =========================
+# 최종 출력 컬럼 순서(요청 반영)
+# =========================
+FINAL_COL_ORDER = [
+    "최종_URL_상태",
+    "최종_URL_메모",
+    "URL_수정안",
+    "작성기관_작성자",
+    "제목",
+    "URL_보고서기준",
+    "search_date",
+    "원문",
+    "참고문헌_작성양식_체크(규칙기반)",
+    "참고문헌_작성양식_체크(GPT기반)",
+    "URL_내용일치여부(GPT)",
+    "URL_상태",
+    "URL_메모",
+    "URL_상태코드",
+    "URL_수동검증_결과",
+    "수동검증_메모",
+]
+
+
+def reorder_columns(df: pd.DataFrame, order: list[str]) -> pd.DataFrame:
+    front = [c for c in order if c in df.columns]
+    tail = [c for c in df.columns if c not in front]
+    return df[front + tail]
+
 
 # =========================
 # (선택) 텍스트 유틸
@@ -56,7 +84,6 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
-        # 기본: SSL 검증 ON
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         status_code = r.status_code
         final_url = r.url
@@ -66,7 +93,6 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
         return {"URL_상태": "오류", "URL_상태코드": status_code, "URL_최종URL": final_url, "URL_메모": f"HTTP {status_code}"}
 
     except requests.exceptions.SSLError:
-        # SSL 검증 실패 -> verify=False로 재시도
         try:
             r2 = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
             status_code = r2.status_code
@@ -81,7 +107,12 @@ def check_url_status(url: str, timeout: int = 15) -> dict:
 
         except Exception as e2:
             msg = f"{type(e2).__name__}: {str(e2)[:120]}"
-            return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": f"SSL 핸드셰이크 실패(verify=False도 실패) - {msg}"}
+            return {
+                "URL_상태": "확인불가",
+                "URL_상태코드": "",
+                "URL_최종URL": "",
+                "URL_메모": f"SSL 핸드셰이크 실패(verify=False도 실패) - {msg}",
+            }
 
     except requests.exceptions.Timeout:
         return {"URL_상태": "확인불가", "URL_상태코드": "", "URL_최종URL": "", "URL_메모": "Timeout"}
@@ -145,7 +176,6 @@ def crawling(url):
 
         content = soup.get_text(strip=True)
 
-        # iframe 처리
         iframes = soup.find_all("iframe")
         iframe_contents = []
         for iframe in iframes:
@@ -178,6 +208,7 @@ def crawling(url):
 # =========================
 max_len = 50000
 
+
 def GPTclass(x, y):
     y = crawling(y)
     if isinstance(y, str) and len(y) > max_len:
@@ -199,7 +230,7 @@ def GPTclass(x, y):
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "[[웹자료]]에서 내용이 주어진 [[정보]] 관련내용이 대략적으로 포함되어있으면 X, 관련내용이 아니거나, 빈페이지 또는 없는 페이지면 O 출력"},
-                    {"role": "user", "content": f"[[정보]]: {x}, [[웹자료]] : {y}"}
+                    {"role": "user", "content": f"[[정보]]: {x}, [[웹자료]] : {y}"},
                 ],
             )
             return response.choices[0].message.content
@@ -211,7 +242,6 @@ def GPTclass(x, y):
 
 
 def map_gpt_url_result(v):
-    """X/O/특수문구 -> 사용자 표기(일치/불일치/확인불가/파일...)"""
     if v is None or not isinstance(v, str):
         return "확인불가"
     s = v.strip()
@@ -246,7 +276,6 @@ def separator(entry):
     doc_info = parts_http[0]
     ref_info = parts_http[1] if len(parts_http) > 1 else ""
 
-    # “ ”(스마트 따옴표) 기준
     if "“" in doc_info and "”" in doc_info:
         match = re.match(r"(.+?),\s*?“(.*)”", doc_info)
         if match:
@@ -271,7 +300,7 @@ def separator(entry):
 
 
 # =========================
-# GPT 형식 검증 (항상 dict 반환)
+# GPT 형식 검증
 # =========================
 def GPTcheck(doc):
     query = """
@@ -309,7 +338,7 @@ def GPTcheck(doc):
 # 규칙 기반 형식 체크
 # =========================
 def check_format(text):
-    title_match = re.search(r'"[^"]*"', text)  # 큰따옴표 기준
+    title_match = re.search(r'"[^"]*"', text)
     if not title_match:
         return False
 
@@ -318,16 +347,16 @@ def check_format(text):
     if not author:
         return False
 
-    # 최소한 URL/검색일 같은 구조가 있는지 대략 체크
     rest = text[title_match.end():].strip()
     temp_parts = [p.strip() for p in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", rest)]
     if len(temp_parts) < 2:
         return False
+
     return True
 
 
 # =========================
-# entries -> DataFrame (✅ 요청한 컬럼명으로 확정 생성)
+# entries -> DataFrame
 # =========================
 def process_entries(entries):
     articles = []
@@ -347,71 +376,52 @@ def process_entries(entries):
 
         url_result = check_url_status(URL_보고서기준)
 
-        articles.append({
-            "URL_상태": url_result["URL_상태"],
-            "URL_메모": url_result["URL_메모"],
-            "URL_상태코드": url_result["URL_상태코드"],
-            "URL_수정안": url_result["URL_최종URL"],
-
-            "작성기관_작성자": 작성기관_작성자,
-            "제목": 제목,
-            "URL_보고서기준": URL_보고서기준,
-
-            "search_date": search_date,
-            "참고문헌_작성양식_체크(규칙기반)": rule_note,
-        })
+        articles.append(
+            {
+                "URL_상태": url_result["URL_상태"],
+                "URL_메모": url_result["URL_메모"],
+                "URL_상태코드": url_result["URL_상태코드"],
+                "URL_수정안": url_result["URL_최종URL"],
+                "작성기관_작성자": 작성기관_작성자,
+                "제목": 제목,
+                "URL_보고서기준": URL_보고서기준,
+                "search_date": search_date,
+                "참고문헌_작성양식_체크(규칙기반)": rule_note,
+            }
+        )
 
     df = pd.DataFrame(articles)
 
     must_cols = [
-        "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
-        "작성기관_작성자", "제목", "URL_보고서기준",
-        "search_date", "참고문헌_작성양식_체크(규칙기반)",
+        "URL_상태",
+        "URL_메모",
+        "URL_상태코드",
+        "URL_수정안",
+        "작성기관_작성자",
+        "제목",
+        "URL_보고서기준",
+        "search_date",
+        "참고문헌_작성양식_체크(규칙기반)",
     ]
     for c in must_cols:
         if c not in df.columns:
             df[c] = ""
 
-    preferred_order = must_cols
-    return df[preferred_order]
+    return df[must_cols]
 
 
 # =========================
-# 컬럼 보정(세션 복원/구버전 섞임 대비)
+# 컬럼 보정(구버전/세션 복원 대비)
 # =========================
 def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or len(df) == 0:
         return df
 
-    rename_map = {
-        "source": "작성기관_작성자",
-        "title": "제목",
-        "URL": "URL_보고서기준",
-        "URL_최종URL": "URL_수정안",
-        "형식체크_오류여부": "참고문헌_작성양식_체크(규칙기반)",
-        "GPT_형식체크_오류여부": "참고문헌_작성양식_체크(GPT기반)",
-        "GPT_URL_유효정보_오류여부": "URL_내용일치여부(GPT)",
-        "수동_URL_상태": "URL_수동검증_결과",
-        "수동_메모": "수동검증_메모",
-    }
-    for old, new in rename_map.items():
-        if old in df.columns and new not in df.columns:
-            df = df.rename(columns={old: new})
-
-    must_cols = [
-        "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
-        "작성기관_작성자", "제목", "URL_보고서기준",
-        "URL_수동검증_결과", "수동검증_메모",
-        "최종_URL_상태", "최종_URL_메모",
-        "참고문헌_작성양식_체크(규칙기반)",
-        "참고문헌_작성양식_체크(GPT기반)",
-        "URL_내용일치여부(GPT)",
-    ]
+    must_cols = FINAL_COL_ORDER + ["원문"]  # 혹시 뒤쪽에 남는 컬럼 방어용
     for c in must_cols:
         if c not in df.columns:
             df[c] = ""
 
-    # 최종 기본값 세팅
     if df["최종_URL_상태"].astype(str).str.strip().eq("").all():
         df["최종_URL_상태"] = df.get("URL_상태", "")
     if df["최종_URL_메모"].astype(str).str.strip().eq("").all():
@@ -425,16 +435,15 @@ def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 def highlight_url_status(val):
     if val == "오류":
-        return "background-color: #f8d7da"  # 연한 빨강
+        return "background-color: #f8d7da"
     if val == "확인불가":
-        return "background-color: #fff3cd"  # 연한 노랑
+        return "background-color: #fff3cd"
     if val == "정상(보안주의)":
-        return "background-color: #ffe5b4"  # 연한 주황
+        return "background-color: #ffe5b4"
     return ""
 
 
 def write_excel_with_conditional_format(df: pd.DataFrame) -> bytes:
-    """다운로드 엑셀에 색상 유지: xlsxwriter 조건부서식"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="Sheet1")
@@ -507,7 +516,6 @@ def main():
         st.success("초기화 완료! 다시 실행하세요.")
         st.stop()
 
-    # expander 헤더 스타일(배경)
     st.markdown(
         """
         <style>
@@ -551,18 +559,8 @@ def main():
             progress_bar.progress(progress)
             status_text.text(f"3단계: GPT 형식검증 수행 중... ({idx + 1}/{n3})")
 
-        gpt_errors = []
-        gpt_originals = []
-        for r, doc in zip(GPT_check_list, entries):
-            if isinstance(r, dict):
-                gpt_errors.append(r.get("오류여부", "O(오류여부 없음)"))
-                gpt_originals.append(r.get("원문", doc))
-            else:
-                gpt_errors.append("O(GPTcheck None)")
-                gpt_originals.append(doc)
-
-        result_df["참고문헌_작성양식_체크(GPT기반)"] = gpt_errors
-        result_df["원문"] = gpt_originals
+        result_df["참고문헌_작성양식_체크(GPT기반)"] = [r.get("오류여부", "O(오류여부 없음)") if isinstance(r, dict) else "O(GPTcheck None)" for r in GPT_check_list]
+        result_df["원문"] = [r.get("원문", doc) if isinstance(r, dict) else doc for r, doc in zip(GPT_check_list, entries)]
 
         status_text.text("4단계: GPT 기반 URL 내용 검증 중...")
         n4 = len(result_df)
@@ -587,40 +585,33 @@ def main():
         result_df["최종_URL_메모"] = result_df["URL_메모"]
 
         result_df = ensure_required_columns(result_df)
-
-        # 앞열 배치
-        front_cols = [
-            "최종_URL_상태", "최종_URL_메모",
-            "URL_상태", "URL_메모", "URL_상태코드", "URL_수정안",
-            "URL_내용일치여부(GPT)",
-        ]
-        front_cols = [c for c in front_cols if c in result_df.columns]
-        result_df = result_df[front_cols + [c for c in result_df.columns if c not in front_cols]]
+        result_df = reorder_columns(result_df, FINAL_COL_ORDER)
 
         st.session_state["result_df"] = result_df
 
         progress_bar.progress(100)
         status_text.text("✅ 완료되었습니다! 아래에서 수동 확인 후 다운로드하세요.")
 
-    # =========================
-    # 결과 표시
-    # =========================
     if st.session_state["result_df"] is not None:
         result_df = ensure_required_columns(st.session_state["result_df"])
+        result_df = reorder_columns(result_df, FINAL_COL_ORDER)
 
-        # ===== 수동 확인(오류/확인불가만) =====
         with st.expander(
             "🔎 담당자의 수동 확인(오류/확인불가)이 필요합니다. 여기를 눌러주세요! 아래 표가 활성화되면, URL(클릭)에 접속하여 최종 판정 결과를 입력해주세요.🤗",
             expanded=False,
         ):
             issue_mask = result_df["URL_상태"].isin(["오류", "확인불가"])
 
-            want_cols = [
-                "URL_상태", "URL_메모", "URL_보고서기준", "작성기관_작성자", "제목",
-                "URL_수동검증_결과", "수동검증_메모"
+            issues_cols = [
+                "URL_상태",
+                "URL_메모",
+                "URL_보고서기준",
+                "작성기관_작성자",
+                "제목",
+                "URL_수동검증_결과",
+                "수동검증_메모",
             ]
-            exist_cols = [c for c in want_cols if c in result_df.columns]
-            issues_df = result_df.loc[issue_mask, exist_cols].copy()
+            issues_df = result_df.loc[issue_mask, [c for c in issues_cols if c in result_df.columns]].copy()
 
             if len(issues_df) == 0:
                 st.info("수동 확인이 필요한(오류/확인불가) 항목이 없습니다.")
@@ -641,10 +632,8 @@ def main():
                 )
 
                 if st.button("✅ 수동 판정 적용"):
-                    if "URL_수동검증_결과" in edited.columns:
-                        result_df.loc[edited.index, "URL_수동검증_결과"] = edited["URL_수동검증_결과"]
-                    if "수동검증_메모" in edited.columns:
-                        result_df.loc[edited.index, "수동검증_메모"] = edited["수동검증_메모"]
+                    result_df.loc[edited.index, "URL_수동검증_결과"] = edited.get("URL_수동검증_결과", "")
+                    result_df.loc[edited.index, "수동검증_메모"] = edited.get("수동검증_메모", "")
 
                     has_manual = result_df["URL_수동검증_결과"].astype(str).str.strip().ne("")
                     result_df.loc[has_manual, "최종_URL_상태"] = result_df.loc[has_manual, "URL_수동검증_결과"]
@@ -652,14 +641,13 @@ def main():
                     has_manual_memo = result_df["수동검증_메모"].astype(str).str.strip().ne("")
                     result_df.loc[has_manual_memo, "최종_URL_메모"] = result_df.loc[has_manual_memo, "수동검증_메모"]
 
+                    result_df = reorder_columns(result_df, FINAL_COL_ORDER)
                     st.session_state["result_df"] = result_df
                     st.success("수동 판정을 최종 값에 반영했습니다.")
 
-        # ===== 화면 표(색상) =====
         styled = result_df.style.applymap(highlight_url_status, subset=["최종_URL_상태"])
         st.dataframe(styled, use_container_width=True)
 
-        # ===== 엑셀 다운로드(색상 유지) =====
         excel_bytes = write_excel_with_conditional_format(result_df)
         st.session_state["processed_data"] = excel_bytes
 
